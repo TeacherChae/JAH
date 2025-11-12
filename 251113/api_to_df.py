@@ -7,20 +7,21 @@ from typing import Optional, List, Dict, Any
 
 class SeoulOpenAPIParser:
     """
-    서울열린데이터 XML API -> pandas DataFrame 변환기
-    - to_dataframe(): 단일 구간(시작~끝) 호출
-    - to_dataframe_full(): 자동 페이지네이션으로 전체(또는 지정량) 수집
+    XML -> pd.DataFrame
+    with data.seoul.go.kr OPEN API
     """
 
     def __init__(self, api_key: str, base_url: str = "http://openapi.seoul.go.kr:8088"):
         self.api_key = api_key
         self.base_url = base_url
 
-    # ----------------- 내부 유틸 -----------------
     def _build_url(self, service_name: str, start: int, end: int) -> str:
         return f"{self.base_url}/{self.api_key}/xml/{service_name}/{start}/{end}/"
 
     def _fetch_xml_root(self, url: str) -> ET.Element:
+        """
+        url -> XML
+        """
         resp = requests.get(url, timeout=15)
         resp.raise_for_status()
         root = ET.fromstring(resp.content)
@@ -36,7 +37,9 @@ class SeoulOpenAPIParser:
         return root
 
     def _xml_to_records(self, root: ET.Element) -> List[Dict[str, Any]]:
-        """<row>들을 [{col: val, ...}, ...]로 변환"""
+        """
+        <row> -> list[dict[col, val]]
+        """
         records = []
         for row in root.iter("row"):
             rec = {child.tag: (child.text or "").strip() for child in row}
@@ -173,11 +176,11 @@ parser = SeoulOpenAPIParser(api_key)
 # 1) 전체 긁기 (list_total_count 이용, 페이지별 1000건씩)
 df_all = parser.to_dataframe_full("VwsmAdstrdNcmCnsmpW", page_size=1000, verbose=True)
 
-# 2) 1~5000 구간만 (end로 컷)
-df_1_5000 = parser.to_dataframe_full("VwsmAdstrdNcmCnsmpW", page_size=1000, end=5000)
+# # 2) 1~5000 구간만 (end로 컷)
+# df_1_5000 = parser.to_dataframe_full("VwsmAdstrdNcmCnsmpW", page_size=1000, end=5000)
 
-# 3) 샘플 3000건만 우선
-df_sample = parser.to_dataframe_full("VwsmAdstrdNcmCnsmpW", page_size=1000, max_rows=3000)
+# # 3) 샘플 3000건만 우선
+# df_sample = parser.to_dataframe_full("VwsmAdstrdNcmCnsmpW", page_size=1000, max_rows=3000)
 
-print(len(df_all), len(df_1_5000), len(df_sample))
+# print(len(df_all), len(df_1_5000), len(df_sample))
 print(df_all.head())
