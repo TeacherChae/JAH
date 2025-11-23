@@ -1,3 +1,5 @@
+from requests import request
+import requests
 import rhinoscriptsyntax as rs
 import Rhino.Geometry as rg
 from System.Net import HttpWebRequest, WebRequest
@@ -276,6 +278,10 @@ address1 = "인천 남동구 도림동"
 address2 = "경기 남양주시 해밀예당1로 272"
 type_col = "lt_c_ademd_info"
 vworld_key = "5C3E2796-9BD1-3BC1-A884-5BD7AE4D360E"
+address1_url = "https://api.vworld.kr/req/address?service=address&request=getcoord&crs=EPSG:4326&address={0}&format=json&type=road&key={1}".format(address1, vworld_key)
+address2_url = "https://api.vworld.kr/req/address?service=address&request=getcoord&crs=EPSG:4326&address={0}&format=json&type=road&key={1}".format(address2, vworld_key)
+address1_request = requests.get(address1_url)
+response_data = json.loads(address1_request)
 info = {}
 select_type = []
 select_type.append(type_col)

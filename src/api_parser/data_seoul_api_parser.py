@@ -1,7 +1,9 @@
+# venv: JAH
+import locale
+locale.setlocale(locale.LC_ALL, 'en_US.UTF-8')
 import requests
 import pandas as pd
 import xml.etree.ElementTree as ET
-import time
 from typing import Optional, List, Dict, Any
 
 class DataSeoulOpenAPIParser:
@@ -68,7 +70,6 @@ class DataSeoulOpenAPIParser:
         start: int = 1,
         end: Optional[int] = None,
         max_rows: Optional[int] = None,
-        pause_sec: float = 0.0,
         verbose: bool = False,
     ) -> pd.DataFrame:
         """
@@ -157,10 +158,6 @@ class DataSeoulOpenAPIParser:
 
             # 다음 루프 준비
             next_start = next_end + 1
-
-            # 레이트 리밋 회피용 대기
-            if pause_sec > 0:
-                time.sleep(pause_sec)
 
         # max_rows로 잘라내기
         if max_rows is not None and len(records) > max_rows:
