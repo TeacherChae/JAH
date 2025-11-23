@@ -1,6 +1,6 @@
+#! python3
 # venv: JAH
 
-import logging
 import requests
 from typing import Optional
 import Rhino.Geometry as rg
@@ -124,7 +124,6 @@ class VworldOpenAPIParser:
         max_rows: Optional[int] = None,
         verbose: bool = False,
     ):
-        # 1페이지 먼저 호출하여 total_count 파악
         first_end = start + batch_size - 1 if end is None else min(end, start + batch_size - 1)
         xmin, ymin = self._address_to_coord(address1)
         xmax, ymax = self._address_to_coord(address2)

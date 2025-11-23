@@ -1,6 +1,6 @@
+#! python3
 # venv: JAH
-import locale
-locale.setlocale(locale.LC_ALL, 'en_US.UTF-8')
+
 import requests
 import pandas as pd
 import xml.etree.ElementTree as ET
