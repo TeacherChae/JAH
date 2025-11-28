@@ -1,6 +1,7 @@
 #! python3
 # venv: JAH
 
+import pandas as pd
 import requests
 from typing import Optional
 import Rhino.Geometry as rg
@@ -37,7 +38,7 @@ class VworldOpenAPIParser:
             "key" : self.api_key
         }
 
-    def admin_district_by_addresses(self, address1: str, address2: str)-> list[AdministrativeDistrict]:
+    def admin_district_by_addresses(self, address1: str, address2: str)-> pd.DataFrame:
         res = []
         data = self._get_full_row_data(address1=address1, address2=address2)
         for datum in data:
@@ -60,18 +61,25 @@ class VworldOpenAPIParser:
                             polyline.Add(polyline[0])
                         polyline_curve = rg.PolylineCurve(polyline)
                         amp = rg.AreaMassProperties.Compute(polyline_curve)
-                        if amp.Area <= 100:
-                        admin_district = AdministrativeDistrict(
-                            name=feat_name,
-                            code=feature["properties"]["emd_cd"],
-                            geometry=polyline_curve,
-                            area=amp.Area,
-                            centroid=amp.Centroid
-                        )
-                        res.append(admin_district)
+                        # if amp.Area <= 100:
+                        # admin_district = AdministrativeDistrict(
+                        #     name=feat_name,
+                        #     code=feature["properties"]["emd_cd"],
+                        #     geometry=polyline_curve,
+                        #     area=amp.Area,
+                        #     centroid=amp.Centroid
+                        # )
+                        row = {
+                            "code": feature["properties"]["emd_cd"],
+                            "name": feat_name,
+                            "geometry": polyline_curve,
+                            "area": amp.Area,
+                            "centroid": amp.Centroid,
+                            }
+                        res.append(row)
                     except:
                         ValueError("Geometry creation error")
-        return res
+        return pd.DataFrame(res)
 
     def _get_wfs_url(self, params: dict):
         query_string = "&".join([f"{key}={value}" for key, value in params.items()])
