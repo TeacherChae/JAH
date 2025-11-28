@@ -60,7 +60,6 @@ class VworldOpenAPIParser:
                             polyline.Add(polyline[0])
                         polyline_curve = rg.PolylineCurve(polyline)
                         amp = rg.AreaMassProperties.Compute(polyline_curve)
-                        if amp.Area <= 100:
                         admin_district = AdministrativeDistrict(
                             name=feat_name,
                             code=feature["properties"]["emd_cd"],
