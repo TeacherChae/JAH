@@ -55,7 +55,6 @@ class DataSeoulOpenAPIParser:
         txt = node.text.strip()
         return int(txt) if txt.isdigit() else None
 
-    # ----------------- 공개 메서드 -----------------
     def to_dataframe(self, service_name: str, start: int = 1, end: int = 100) -> pd.DataFrame:
         """단일 구간 호출 -> DataFrame"""
         url = self._build_url(service_name, start, end)

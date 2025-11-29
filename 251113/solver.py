@@ -1,46 +1,81 @@
+#! python3
+# venv: JAH
+
+from src.api_parser.vworld_api_parser import VworldOpenAPIParser
+from src.api_parser.data_seoul_api_parser import DataSeoulOpenAPIParser
+from src.gis_util.adstrd_cd_to_legald_cd import get_mapping_df
 import pandas as pd
-from collections import defaultdict
 
-# 데이터 로드
-월평균소득 = pd.read_csv('D:/Keon Chae/Programming Languages/Python/referred_files/서울시 상권분석서비스(소득소비-행정동).csv', encoding="euckr")
-average_income = 월평균소득.groupby('행정동_코드')['월_평균_소득_금액'].mean().reset_index()
+# 1. API 키 설정
+vworld_api_key = "2F23FA9B-2FB7-30B4-9335-A9D15732985F"
+data_seoul_api_key = "69785956756272693534507159576d"
 
-# 앞에서 가지고 온 모든 서울시 법정동 코드
-shape_code = list(map(lambda x: int(x + '00'), shape_code))
-result = []
+# 2. Parser 준비
+vworld_parser = VworldOpenAPIParser(vworld_api_key)
+data_seoul_parser = DataSeoulOpenAPIParser(data_seoul_api_key)
 
-def hang(k):
-    """법정동에 해당하는 행정동코드 리스트 반환"""
-    h = df['행정동코드'][df['법정동코드'] == k]
-    return h
+# 3. 데이터 불러오기
 
-# 기본값 (평균 소득)
-default_value = average_income['월_평균_소득_금액'].mean()
+# legal district (기준 df)
+address1 = "인천 남동구 도림동"
+address2 = "경기 남양주시 해밀예당1로 272"
 
-for i in shape_code:
-    k = list(set(hang(i)))  # 법정동 코드에 해당하는 행정동 코드 리스트
-    pop = 0  # 현재 법정동의 평균 소득 초기화
-    count = 0  # 유효한 행정동 데이터의 개수
-    for j in k:
-        j = str(j)[:-2]  # 뒤의 "00" 제거
-        j = int(j)  # 정수형으로 변환
+legald_df = vworld_parser.get_legal_district_by_addresses(address1, address2)
+legald_df = legald_df[legald_df["area"] > 100]
+print("법정동 데이터프레임:")
+print(legald_df.head())
 
-        # 행정동 코드에 해당하는 소득값 가져오기
-        ret = average_income['월_평균_소득_금액'][average_income['행정동_코드'] == j]
+# avg_income
+avg_income_df = data_seoul_parser.to_dataframe_full("VwsmAdstrdNcmCnsmpW")
+print("평균 소득 데이터프레임:")
+avg_income_df.columns = (
+    avg_income_df.columns.str.strip().str.lower()
+)
+print(avg_income_df.head())
+avg_income_df["mt_avrg_income_amt"] = pd.to_numeric(
+    avg_income_df["mt_avrg_income_amt"],
+    errors="coerce"
+)
+mean = avg_income_df["mt_avrg_income_amt"].mean()
+avg_income_by_adstrd = avg_income_df.groupby("adstrd_cd")["mt_avrg_income_amt"].mean().reset_index()
+avg_income_by_adstrd["mt_avrg_income_amt"].fillna(mean, inplace=True)
 
-        if ret.empty:
-            print(f"행정동 코드 {j}에 해당하는 데이터가 없습니다.")
-            continue
-        else:
-            pop += ret.values[0]  # 소득값 합산
-            count += 1  # 유효한 데이터 카운트 증가
-    
-    # 평균 계산 (유효한 데이터가 있을 경우만)
-    if count > 0:
-        pop /= count
-    else:
-        pop = default_value  # 데이터가 없는 경우 기본값 사용
-    
-    result.append(pop)
+# 4. legal - avg_income 매핑 준비
+file_path = "D:/Keon Chae/Workshop/JAH_PythonCircle/251113/KIKmix.20240201.xlsx"
+mapping_df = get_mapping_df(file_path)
+print("매핑 데이터프레임:")
+print(mapping_df.head())
 
-print("법정동 코드별 월 평균 소득:", result)
+# 5. mapping_df에 avg_income 붙이기 (adstrd_cd 기준)
+mapping_with_income = mapping_df.merge(
+    avg_income_by_adstrd,
+    on="adstrd_cd",
+    how="left",
+)
+print("매핑된 평균 소득 데이터프레임:")
+print(mapping_with_income.head())
+
+# 6. legald_cd 기준으로 평균 내기
+avg_income_by_legald = (
+    mapping_with_income
+    .groupby("legald_cd", as_index=False)["mt_avrg_income_amt"]
+    .mean()
+)
+print("법정동 코드별 평균 소득 데이터프레임:")
+print(avg_income_by_legald.head())
+
+# 7. legal df에 avg_income 붙이기
+legald_with_avg_income = legald_df.merge(
+    avg_income_by_legald,
+    on="legald_cd",
+    how="left",
+)
+legald_with_avg_income["mt_avrg_income_amt"].fillna(mean, inplace=True)
+
+print("법정동 데이터프레임에 평균 소득 추가:")
+print(legald_with_avg_income)
+
+# 8. 결과 활용
+geometries = legald_with_avg_income["geometry"].to_list()
+centroids = legald_with_avg_income["centroid"].to_list()
+avg_incomes = legald_with_avg_income["mt_avrg_income_amt"].to_list()

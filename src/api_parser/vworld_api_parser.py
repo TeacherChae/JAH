@@ -5,12 +5,14 @@ import pandas as pd
 import requests
 from typing import Optional
 import Rhino.Geometry as rg
-import rhinoscriptsyntax as rs
 from src.gis_util.gps_to_upm import GPStoUTM
-from src.io_format.admin_district import AdministrativeDistrict
 
 
 class VworldOpenAPIParser:
+    """
+    JSON -> pd.DataFrame
+    with vworld.kr OPEN API
+    """
     def __init__(self, api_key: str):
         self.api_key = api_key
         self.wfs_url = "https://api.vworld.kr/req/wfs?key="
@@ -38,7 +40,7 @@ class VworldOpenAPIParser:
             "key" : self.api_key
         }
 
-    def admin_district_by_addresses(self, address1: str, address2: str)-> pd.DataFrame:
+    def get_legal_district_by_addresses(self, address1: str, address2: str)-> pd.DataFrame:
         res = []
         data = self._get_full_row_data(address1=address1, address2=address2)
         for datum in data:
@@ -62,7 +64,7 @@ class VworldOpenAPIParser:
                         polyline_curve = rg.PolylineCurve(polyline)
                         amp = rg.AreaMassProperties.Compute(polyline_curve)
                         row = {
-                            "code": feature["properties"]["emd_cd"],
+                            "legald_cd": feature["properties"]["emd_cd"],
                             "name": feat_name,
                             "geometry": polyline_curve,
                             "area": amp.Area,
