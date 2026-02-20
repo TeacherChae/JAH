@@ -16,3 +16,10 @@ __pycache__/
 
 # venv
 JAH_venv/
+
+# xlsx
+*.xlsx
+
+# dirs
+courses/
+homeworks/
