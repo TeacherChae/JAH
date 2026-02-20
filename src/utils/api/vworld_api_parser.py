@@ -5,7 +5,7 @@ import pandas as pd
 import requests
 from typing import Optional
 import Rhino.Geometry as rg
-from src.gis_util.gps_to_upm import GPStoUTM
+from src.utils.gis.gps_to_upm import GPStoUTM
 
 
 class VworldOpenAPIParser:
