@@ -4,40 +4,52 @@
 from src.utils.api.vworld_api_parser import VworldOpenAPIParser
 from src.utils.api.data_seoul_api_parser import DataSeoulOpenAPIParser
 from src.utils.gis.adstrd_cd_to_legald_cd import get_mapping_df
-from dataclasses import dataclass
 from dotenv import load_dotenv
-from typing import Optional
+from pathlib import Path
+from urllib.parse import urlparse, unquote
 import os
 import pandas as pd
 
 
-@dataclass
 class URSUSSolver:
-    vworld_parser: Optional[VworldOpenAPIParser] = None
-    data_seoul_parser: Optional[DataSeoulOpenAPIParser] = None
 
-    # 1. API 키 설정
+    def __init__(self):
+        vworld_api_key, data_seoul_api_key = self._load_api_keys()
+        self.vworld_parser = VworldOpenAPIParser(vworld_api_key)
+        self.data_seoul_parser = DataSeoulOpenAPIParser(data_seoul_api_key)
+
+    def _file_uri_to_path(self, raw: str) -> Path:
+        if raw.startswith("file:///"):
+            p = unquote(urlparse(raw).path)
+            if len(p) > 2 and p[0] == "/" and p[2] == ":":
+                p = p[1:]
+            return Path(p)
+        return Path(raw)
+
+
     def _load_api_keys(self) -> tuple[str, str]:
-        load_dotenv()
+        """
+        API 키 불러오기
+        """
+        script_path = self._file_uri_to_path(__file__)
+        load_dotenv(script_path.parent / ".env")
         vworld_api_key = os.getenv("VWORLD_API_KEY")
         data_seoul_api_key = os.getenv("DATA_SEOUL_API_KEY")
-
         if not vworld_api_key or not data_seoul_api_key:
             raise ValueError("Missing API keys in .env")
 
         return vworld_api_key, data_seoul_api_key
 
-    # 2. Parser 준비
-    def _set_parser(self):
-        vworld_api_key, data_seoul_api_key = self._load_api_keys()
-        self.vworld_parser = VworldOpenAPIParser(vworld_api_key)
-        self.data_seoul_parser = DataSeoulOpenAPIParser(data_seoul_api_key)
+    def _get_legal_district_df(self, address1: str, address2: str) -> pd.DataFrame:
+        """
+        법정동 df
 
-    # 3. 데이터 불러오기
-    # legal district (기준 df)
-    def _get_legal_district(self, address1: str, address2: str) -> pd.DataFrame:
-        if self.vworld_parser is None:
-            raise RuntimeError("Parser is not initialized. Call _set_parser() first.")
+        "legald_cd": 법정동 코드,
+        "name": 법정동 명,
+        "geometry": 법정동 경계 geometry,
+        "area": 법정동 면적,
+        "centroid": 법정동 중점,
+        """
         legald_df = self.vworld_parser.get_legal_district_by_addresses(address1, address2)
         legald_df = legald_df[legald_df["area"] > 100]
         print("법정동 데이터프레임:")
@@ -45,9 +57,13 @@ class URSUSSolver:
         return legald_df
 
     # avg_income
-    def _get_avg_income(self) -> tuple[float, pd.DataFrame]:
-        if self.data_seoul_parser is None:
-            raise RuntimeError("Parser is not initialized. Call _set_parser() first.")
+    def _get_avg_income_df(self) -> tuple[float, pd.DataFrame]:
+        """
+        행정동 기준 월 평균 소득 df
+
+        "adstrd_cd": 행정동 코드,
+        "mt_avrg_income": 월 평균 소득,
+        """
         avg_income_df = self.data_seoul_parser.to_dataframe_full("VwsmAdstrdNcmCnsmpW")
         print("평균 소득 데이터프레임:")
         avg_income_df.columns = (
@@ -63,8 +79,10 @@ class URSUSSolver:
         avg_income_by_adstrd["mt_avrg_income_amt"].fillna(mean, inplace=True)
         return mean, avg_income_by_adstrd
 
-    # 4. legal - avg_income 매핑 준비
     def _get_mapping_df(self) -> pd.DataFrame:
+        """
+        행정동 df <-> 법정동 df 매칭
+        """
         file_path = "D:/Keon Chae/Workshop/JAH_PythonCircle/src/sheets/KIKmix.20240201.xlsx"
         mapping_df = get_mapping_df(file_path)
         print("매핑 데이터프레임:")
@@ -72,9 +90,13 @@ class URSUSSolver:
         return mapping_df
 
     def run(self):
-        self._set_parser()
-        legald_df = self._get_legal_district(address1="인천 남동구 도림동", address2="경기 남양주시 해밀예당1로 272")
-        mean, avg_income_by_adstrd = self._get_avg_income()
+        """
+        solver.run()
+
+        TODO: to be continued
+        """
+        legald_df = self._get_legal_district_df(address1="인천 남동구 도림동", address2="경기 남양주시 해밀예당1로 272")
+        mean, avg_income_by_adstrd = self._get_avg_income_df()
         mapping_df = self._get_mapping_df()
         # # 5. mapping_df에 avg_income 붙이기 (adstrd_cd 기준)
         mapping_with_income: pd.DataFrame = mapping_df.merge(
@@ -114,7 +136,7 @@ class URSUSSolver:
 
 if __name__ == "__main__":
     solver = URSUSSolver()
-    solver.run()
+    geometries, centroids, avg_incomes = solver.run()
 
 
 
