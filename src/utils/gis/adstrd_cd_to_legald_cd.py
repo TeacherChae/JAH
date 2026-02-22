@@ -11,7 +11,3 @@ def get_mapping_df(file_path) -> pd.DataFrame:
     cols = list(mapping.values())
     df_renamed[cols] = df_renamed[cols].astype(str).apply(lambda col: col.str[:-2])
     return df_renamed
-
-file_path = "D:/Keon Chae/Workshop/JAH_PythonCircle/251113/KIKmix.20240201.xlsx"
-mapping_df = get_mapping_df(file_path)
-print(mapping_df)
