@@ -13,9 +13,10 @@ class VworldOpenAPIParser:
     JSON -> pd.DataFrame
     with vworld.kr OPEN API
     """
+
     def __init__(self, api_key: str):
         self.api_key = api_key
-        self.wfs_url = "https://api.vworld.kr/req/wfs?key="
+        self.wfs_url = "https://api.vworld.kr/req/wfs"
         self.geocoder_url = "https://api.vworld.kr/req/address"
         self.wfs_params = {
             "SERVICE": "WFS",
@@ -28,26 +29,28 @@ class VworldOpenAPIParser:
             "SRSNAME": "EPSG:4326",
             "OUTPUT": "application/json",
             "EXCEPTIONS": "text/xml",
-            "KEY": self.api_key
+            "KEY": self.api_key,
         }
         self.geocoder_params = {
-            "service" : "address",
-            "request" : "getcoord",
-            "crs" : "EPSG:4326",
+            "service": "address",
+            "request": "getcoord",
+            "crs": "EPSG:4326",
             "address": None,
-            "format" : "json",
-            "type" : "road",
-            "key" : self.api_key
+            "format": "json",
+            "type": "road",
+            "key": self.api_key,
         }
 
-    def get_legal_district_by_addresses(self, address1: str, address2: str)-> pd.DataFrame:
+    def get_legal_district_by_addresses(
+        self, address1: str, address2: str
+    ) -> pd.DataFrame:
         res = []
         data = self._get_full_row_data(address1=address1, address2=address2)
         for datum in data:
             for feature in datum["features"]:
                 coords = feature["geometry"]["coordinates"]
                 feat_name = feature["properties"]["full_nm"]
-                if "서울"in feat_name:
+                if "서울" in feat_name:
                     points = []
                     for coord in coords[0][0]:
                         gps_to_utm = GPStoUTM()
@@ -69,7 +72,7 @@ class VworldOpenAPIParser:
                             "geometry": polyline_curve,
                             "area": amp.Area,
                             "centroid": amp.Centroid,
-                            }
+                        }
                         res.append(row)
                     except:
                         ValueError("Geometry creation error")
@@ -103,8 +106,8 @@ class VworldOpenAPIParser:
         params["address"] = address
         url = self._get_geocoder_url(params)
         data = self._fetch_json(url)
-        x_coord = data['response']['result']['point']['x']
-        y_coord = data['response']['result']['point']['y']
+        x_coord = data["response"]["result"]["point"]["x"]
+        y_coord = data["response"]["result"]["point"]["y"]
         return tuple(map(float, [x_coord, y_coord]))
 
     def _get_district_boundary_data(self, start_index, count, ymin, xmin, ymax, xmax):
@@ -126,15 +129,21 @@ class VworldOpenAPIParser:
         max_rows: Optional[int] = None,
         verbose: bool = False,
     ):
-        first_end = start + batch_size - 1 if end is None else min(end, start + batch_size - 1)
+        first_end = (
+            start + batch_size - 1 if end is None else min(end, start + batch_size - 1)
+        )
         xmin, ymin = self._address_to_coord(address1)
         xmax, ymax = self._address_to_coord(address2)
-        first_batch = self._get_district_boundary_data(start, batch_size, ymin, xmin, ymax, xmax)
+        first_batch = self._get_district_boundary_data(
+            start, batch_size, ymin, xmin, ymax, xmax
+        )
         records = []
         records.append(first_batch)
 
         if verbose:
-            print(f"[INFO] fetched {len(first_batch)} rows (start={start} ~ end={first_end})")
+            print(
+                f"[INFO] fetched {len(first_batch)} rows (start={start} ~ end={first_end})"
+            )
 
         # 다음 페이지부터 루프
         fetched = len(first_batch)
@@ -149,10 +158,14 @@ class VworldOpenAPIParser:
             if end is not None:
                 next_end = min(next_end, end)
 
-            batch = self._get_district_boundary_data(next_start, batch_size, ymin, xmin, ymax, xmax)
+            batch = self._get_district_boundary_data(
+                next_start, batch_size, ymin, xmin, ymax, xmax
+            )
 
             if verbose:
-                print(f"[INFO] fetched {len(batch)} rows (start={next_start} ~ end={next_end})")
+                print(
+                    f"[INFO] fetched {len(batch)} rows (start={next_start} ~ end={next_end})"
+                )
 
             # 종료 조건 2: 더 이상 데이터가 안 나옴 (total_count를 못 얻은 경우 유용)
             if not batch:
