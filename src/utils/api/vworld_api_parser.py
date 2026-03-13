@@ -1,11 +1,16 @@
 #! python3
 # venv: JAH
 
+import json
+import time
 import pandas as pd
 import requests
+from pathlib import Path
 from typing import Optional
 import Rhino.Geometry as rg
 from src.utils.gis.gps_to_upm import GPStoUTM
+
+_CACHE_TTL_DAYS = 30
 
 
 class VworldOpenAPIParser:
@@ -14,8 +19,9 @@ class VworldOpenAPIParser:
     with vworld.kr OPEN API
     """
 
-    def __init__(self, api_key: str):
-        self.api_key = api_key
+    def __init__(self, api_key: str, cache_dir: Optional[Path] = None):
+        self.api_key   = api_key
+        self.cache_dir = cache_dir
         self.wfs_url = "https://api.vworld.kr/req/wfs"
         self.geocoder_url = "https://api.vworld.kr/req/address"
         self.wfs_params = {
@@ -44,6 +50,24 @@ class VworldOpenAPIParser:
     def get_legal_district_by_addresses(
         self, address1: str, address2: str
     ) -> pd.DataFrame:
+        """법정동 경계 DataFrame (TTL 캐시 적용)"""
+        cache_path = self.cache_dir / "legald_boundaries.json" if self.cache_dir else None
+
+        if cache_path and self._is_cache_valid(cache_path):
+            remaining = _CACHE_TTL_DAYS - (time.time() - cache_path.stat().st_mtime) / 86400
+            print(f"[CACHE] legald_boundaries 캐시 사용 (만료까지 {remaining:.1f}일)")
+            return self._load_cache(cache_path)
+
+        print("[CACHE] legald_boundaries API 호출 중...")
+        df = self._fetch_legal_district(address1, address2)
+
+        if cache_path:
+            self._save_cache(df, cache_path)
+
+        return df
+
+    def _fetch_legal_district(self, address1: str, address2: str) -> pd.DataFrame:
+        """실제 API 호출 + Geometry 생성"""
         res = []
         data = self._get_full_row_data(address1=address1, address2=address2)
         for datum in data:
@@ -66,17 +90,58 @@ class VworldOpenAPIParser:
                             polyline.Add(polyline[0])
                         polyline_curve = rg.PolylineCurve(polyline)
                         amp = rg.AreaMassProperties.Compute(polyline_curve)
-                        row = {
+                        res.append({
                             "legald_cd": feature["properties"]["emd_cd"],
-                            "name": feat_name,
-                            "geometry": polyline_curve,
-                            "area": amp.Area,
-                            "centroid": amp.Centroid,
-                        }
-                        res.append(row)
+                            "name":      feat_name,
+                            "geometry":  polyline_curve,
+                            "area":      amp.Area,
+                            "centroid":  amp.Centroid,
+                        })
                     except:
                         ValueError("Geometry creation error")
         return pd.DataFrame(res)
+
+    def _is_cache_valid(self, path: Path) -> bool:
+        if not path.exists():
+            return False
+        age_days = (time.time() - path.stat().st_mtime) / 86400
+        return age_days < _CACHE_TTL_DAYS
+
+    def _save_cache(self, df: pd.DataFrame, path: Path) -> None:
+        """PolylineCurve/Point3d → 좌표 배열로 직렬화하여 저장"""
+        records = []
+        for _, row in df.iterrows():
+            pl = row["geometry"].ToPolyline()
+            records.append({
+                "legald_cd": row["legald_cd"],
+                "name":      row["name"],
+                "area":      row["area"],
+                "centroid":  [row["centroid"].X, row["centroid"].Y],
+                "coords":    [[pt.X, pt.Y] for pt in pl],
+            })
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(str(path), "w", encoding="utf-8") as f:
+            json.dump(records, f, ensure_ascii=False)
+        print(f"[CACHE] legald_boundaries 저장 완료 ({len(records)}건)")
+
+    def _load_cache(self, path: Path) -> pd.DataFrame:
+        """좌표 배열 → Rhino Geometry 재생성"""
+        with open(str(path), "r", encoding="utf-8") as f:
+            records = json.load(f)
+        rows = []
+        for r in records:
+            points = [rg.Point3d(c[0], c[1], 0) for c in r["coords"]]
+            pl = rg.Polyline(points)
+            if not pl.IsClosed:
+                pl.Add(pl[0])
+            rows.append({
+                "legald_cd": r["legald_cd"],
+                "name":      r["name"],
+                "geometry":  rg.PolylineCurve(pl),
+                "area":      r["area"],
+                "centroid":  rg.Point3d(r["centroid"][0], r["centroid"][1], 0),
+            })
+        return pd.DataFrame(rows)
 
     def _get_wfs_url(self, params: dict):
         query_string = "&".join([f"{key}={value}" for key, value in params.items()])

@@ -2,6 +2,7 @@
 # venv: JAH
 
 import sys
+import time
 from pathlib import Path
 from urllib.parse import urlparse, unquote
 
@@ -18,12 +19,23 @@ from dotenv import load_dotenv
 import os
 import pandas as pd
 
+_CACHE_DIR      = _project_root / "src" / "cache"
+_CACHE_TTL_DAYS = 30  # 캐시 유효 기간 (일)
+
+
+def _is_cache_valid(path: Path) -> bool:
+    """캐시 파일이 존재하고 TTL 이내인지 확인"""
+    if not path.exists():
+        return False
+    age_days = (time.time() - path.stat().st_mtime) / 86400
+    return age_days < _CACHE_TTL_DAYS
+
 
 class URSUSSolver:
 
     def __init__(self):
         vworld_api_key, data_seoul_api_key = self._load_api_keys()
-        self.vworld_parser = VworldOpenAPIParser(vworld_api_key)
+        self.vworld_parser = VworldOpenAPIParser(vworld_api_key, cache_dir=_CACHE_DIR)
         self.data_seoul_parser = DataSeoulOpenAPIParser(data_seoul_api_key)
 
     def _file_uri_to_path(self, raw: str) -> Path:
@@ -49,7 +61,7 @@ class URSUSSolver:
 
     def _get_legal_district_df(self, address1: str, address2: str) -> pd.DataFrame:
         """
-        법정동 df
+        법정동 df — 캐시는 VworldOpenAPIParser가 처리
 
         "legald_cd": 법정동 코드,
         "name": 법정동 명,
@@ -57,20 +69,27 @@ class URSUSSolver:
         "area": 법정동 면적,
         "centroid": 법정동 중점,
         """
-        legald_df = self.vworld_parser.get_legal_district_by_addresses(
-            address1, address2
-        )
-        legald_df = legald_df[legald_df["area"] > 100]
+        legald_df = self.vworld_parser.get_legal_district_by_addresses(address1, address2)
+        legald_df = legald_df.query("area > 100").reset_index(drop=True)
         return legald_df
 
     # avg_income
     def _get_avg_income_df(self) -> tuple[float, pd.DataFrame]:
         """
-        행정동 기준 월 평균 소득 df
+        행정동 기준 월 평균 소득 df (TTL 캐시 적용)
 
         "adstrd_cd": 행정동 코드,
-        "mt_avrg_income": 월 평균 소득,
+        "mt_avrg_income_amt": 월 평균 소득,
         """
+        cache_path = _CACHE_DIR / "avg_income.json"
+
+        if _is_cache_valid(cache_path):
+            print(f"[CACHE] avg_income 캐시 사용 (만료까지 {_CACHE_TTL_DAYS - (time.time() - cache_path.stat().st_mtime) / 86400:.1f}일)")
+            avg_income_by_adstrd = pd.read_json(str(cache_path))
+            mean = avg_income_by_adstrd["mt_avrg_income_amt"].mean()
+            return mean, avg_income_by_adstrd
+
+        print("[CACHE] avg_income API 호출 중...")
         avg_income_df = self.data_seoul_parser.to_dataframe_full("VwsmAdstrdNcmCnsmpW")
         avg_income_df.columns = avg_income_df.columns.str.strip().str.lower()
         avg_income_df["mt_avrg_income_amt"] = pd.to_numeric(
@@ -82,7 +101,11 @@ class URSUSSolver:
             .mean()
             .reset_index()
         )
-        avg_income_by_adstrd["mt_avrg_income_amt"].fillna(mean, inplace=True)
+        avg_income_by_adstrd["mt_avrg_income_amt"] = avg_income_by_adstrd["mt_avrg_income_amt"].fillna(mean)
+
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        avg_income_by_adstrd.to_json(str(cache_path))
+        print(f"[CACHE] avg_income 저장 완료 ({len(avg_income_by_adstrd)}건)")
         return mean, avg_income_by_adstrd
 
     def _get_mapping_df(self) -> pd.DataFrame:
