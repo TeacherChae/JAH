@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 import os
 import pandas as pd
 
-_CACHE_DIR      = _project_root / "src" / "cache"
+_CACHE_DIR = _project_root / "src" / "cache"
 _CACHE_TTL_DAYS = 30  # 캐시 유효 기간 (일)
 
 
@@ -69,7 +69,9 @@ class URSUSSolver:
         "area": 법정동 면적,
         "centroid": 법정동 중점,
         """
-        legald_df = self.vworld_parser.get_legal_district_by_addresses(address1, address2)
+        legald_df = self.vworld_parser.get_legal_district_by_addresses(
+            address1, address2
+        )
         legald_df = legald_df.query("area > 100").reset_index(drop=True)
         return legald_df
 
@@ -84,8 +86,13 @@ class URSUSSolver:
         cache_path = _CACHE_DIR / "avg_income.json"
 
         if _is_cache_valid(cache_path):
-            print(f"[CACHE] avg_income 캐시 사용 (만료까지 {_CACHE_TTL_DAYS - (time.time() - cache_path.stat().st_mtime) / 86400:.1f}일)")
+            print(
+                f"[CACHE] avg_income 캐시 사용 (만료까지 {_CACHE_TTL_DAYS - (time.time() - cache_path.stat().st_mtime) / 86400:.1f}일)"
+            )
             avg_income_by_adstrd = pd.read_json(str(cache_path))
+            avg_income_by_adstrd["adstrd_cd"] = avg_income_by_adstrd[
+                "adstrd_cd"
+            ].astype(str)
             mean = avg_income_by_adstrd["mt_avrg_income_amt"].mean()
             return mean, avg_income_by_adstrd
 
@@ -101,7 +108,12 @@ class URSUSSolver:
             .mean()
             .reset_index()
         )
-        avg_income_by_adstrd["mt_avrg_income_amt"] = avg_income_by_adstrd["mt_avrg_income_amt"].fillna(mean)
+        avg_income_by_adstrd["adstrd_cd"] = avg_income_by_adstrd["adstrd_cd"].astype(
+            str
+        )
+        avg_income_by_adstrd["mt_avrg_income_amt"] = avg_income_by_adstrd[
+            "mt_avrg_income_amt"
+        ].fillna(mean)
 
         _CACHE_DIR.mkdir(parents=True, exist_ok=True)
         avg_income_by_adstrd.to_json(str(cache_path))
