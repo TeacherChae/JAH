@@ -1,5 +1,5 @@
 // Grasshopper Script Instance
-// IDW 공간 보간 + 행정동 경계 기반 Mesh 시각화
+// IDW 공간 보간 + 단일 외곽선(GeoUnion 출력) 기반 Mesh 시각화
 #region Usings
 using System;
 using System.Collections.Generic;
@@ -20,15 +20,17 @@ public class Script_Instance : GH_ScriptInstance
     // ─────────────────────────────────────────────────────────────────────
     //  ENTRY POINT
     //
-    //  입력:  geometries  행정동 경계 폴리곤 (List<Curve>)
+    //  입력:  boundary    GeoUnion이 반환한 단일 외곽선 (Curve)
     //         centroids   행정동 중심점 (List<Point3d>)
     //         values      스칼라 값 - avg_incomes 등 (List<double>)
-    //         resolution  Mesh 최대 엣지 길이, 보간 해상도 (double)
+    //         resolution  Mesh 최대 엣지 길이 (double)
     //         power       IDW 지수 p, 기본 2.0 (double)
     //         heightScale Z 높이 배율 (double)
-    //         colorLow    최솟값 색상 (Color)
-    //         colorHigh   최댓값 색상 (Color)
     //         legendSteps 범례 단계 수, 기본 8 (int)
+    //         colorStyle  색상 스타일 (int, 0=Custom 1=BlueRed 2=Heatmap
+    //                       3=Spectral 4=Viridis 5=Diverging 6=Grayscale)
+    //         colorLow    colorStyle=0 일 때 최솟값 색상 (Color)
+    //         colorHigh   colorStyle=0 일 때 최댓값 색상 (Color)
     //
     //  출력:  mesh        Z 변위 + 컬러 메시 (Mesh)
     //         flatMesh    Z=0, 컬러만 - 지도 오버레이용 (Mesh)
@@ -38,12 +40,14 @@ public class Script_Instance : GH_ScriptInstance
     //         legendDots  범례 값 레이블 (List<TextDot>)
     // ─────────────────────────────────────────────────────────────────────
     private void RunScript(
-        List<Curve>   geometries,
+        Curve         boundary,
         List<Point3d> centroids,
         List<double>  values,
         double        resolution,
         double        power,
         double        heightScale,
+        double        edgeFalloff,
+        double        heightRatio,
         int           legendSteps,
         int           colorStyle,
         Color         colorLow,
@@ -57,64 +61,52 @@ public class Script_Instance : GH_ScriptInstance
     {
         try
         {
-        // ── Step 0: 입력 수신 확인 ─────────────────────────────────────
-        Print($"[0] geometries={geometries?.Count ?? -1}, centroids={centroids?.Count ?? -1}, values={values?.Count ?? -1}");
+        // ── 입력 확인 ─────────────────────────────────────────────────────
+        int nanCount = values?.Count(v => double.IsNaN(v) || double.IsInfinity(v)) ?? 0;
+        Print($"[0] boundary={boundary != null}, centroids={centroids?.Count ?? -1}, values={values?.Count ?? -1}, NaN/Inf={nanCount}");
 
-        // ── 입력 검증 ────────────────────────────────────────────────────
-        if (geometries == null || geometries.Count == 0)
-        { AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, "geometries가 비어 있습니다."); return; }
+        if (boundary == null)
+        { AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, "boundary가 null입니다."); return; }
         if (centroids == null || centroids.Count == 0)
-        { AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, "centroids가 비어 있습니다.");  return; }
+        { AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, "centroids가 비어 있습니다."); return; }
         if (values == null || values.Count == 0)
-        { AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, "values가 비어 있습니다.");     return; }
+        { AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, "values가 비어 있습니다."); return; }
         if (centroids.Count != values.Count)
         { AddRuntimeMessage(GH_RuntimeMessageLevel.Error, "centroids와 values의 개수가 다릅니다."); return; }
 
-        int nanCount = values.Count(v => double.IsNaN(v) || double.IsInfinity(v));
-        Print($"[1] 검증 통과. centroids={centroids.Count}, values={values.Count}, NaN/Inf={nanCount}");
+        // ── 파라미터 기본값 ───────────────────────────────────────────────
+        if (resolution   <= 0) resolution   = 100.0;
+        if (power        <= 0) power        = 3.0;
+        if (heightScale  <= 0) heightScale  = 0.5;
+        if (legendSteps  <= 1) legendSteps  = 8;
+        if (colorLow.A   == 0) colorLow     = Color.FromArgb(44,  123, 182);
+        if (colorHigh.A  == 0) colorHigh    = Color.FromArgb(215,  25,  28);
+        if (edgeFalloff  <= 0) edgeFalloff  = 2.0;   // 기본: smoothstep 유사
+        if (heightRatio  <= 0) heightRatio  = 0.25;  // 기본: bboxWidth * 0.25
 
-        // ── 파라미터 기본값 ──────────────────────────────────────────────
-        if (resolution  <= 0)        resolution  = 500.0;
-        if (power       <= 0)        power       = 1.0;
-        if (heightScale <= 0)        heightScale = 0.5;
-        if (legendSteps <= 1)        legendSteps = 8;
-        if (colorLow.A  == 0)        colorLow    = Color.FromArgb(44,  123, 182);
-        if (colorHigh.A == 0)        colorHigh   = Color.FromArgb(215,  25,  28);
-
-        // ── 파이프라인 ───────────────────────────────────────────────────
+        // ── 파이프라인 ────────────────────────────────────────────────────
         var field   = new SpatialField(centroids, values);
         var mapper  = ColorMapper.FromStyle(colorStyle, colorLow, colorHigh);
-        Print($"[1b] colorStyle={colorStyle} → {mapper.StyleName}");
-        var builder = new DistrictMeshBuilder(field, mapper, power, heightScale, resolution);
+        var builder = new MeshBuilder(field, mapper, power, heightScale, resolution, edgeFalloff, heightRatio);
 
-        Print($"[2] SpatialField/Builder 생성 완료. MinVal={field.MinValue:F0}, MaxVal={field.MaxValue:F0}");
+        Print($"[1] MinVal={field.MinValue:F0}, MaxVal={field.MaxValue:F0}, colorStyle={mapper.StyleName}");
 
-        Mesh elevMesh, flatResult;
-        int dbgNull, dbgBrepFail, dbgMeshFail, dbgOk;
-
-        builder.Build(geometries, out elevMesh, out flatResult,
-                      out dbgNull, out dbgBrepFail, out dbgMeshFail, out dbgOk);
-
-        Print($"[3] Build 완료: null={dbgNull} | BrepFail={dbgBrepFail} | MeshFail={dbgMeshFail} | OK={dbgOk}");
-        Print($"[3] elevMesh: Valid={elevMesh.IsValid} Verts={elevMesh.Vertices.Count} Faces={elevMesh.Faces.Count} VNorm={elevMesh.Normals.Count} FaceNorm={elevMesh.FaceNormals.Count} Colors={elevMesh.VertexColors.Count}");
-        Print($"[3] flatMesh: Valid={flatResult.IsValid} Verts={flatResult.Vertices.Count} Faces={flatResult.Faces.Count} VNorm={flatResult.Normals.Count} FaceNorm={flatResult.FaceNormals.Count} Colors={flatResult.VertexColors.Count}");
-        Print(builder._dbgLog);  // 첫 번째 district elevPart 개별 상태
+        var (elevMesh, flatResult) = builder.Build(boundary);
+        Print($"[2] {builder.DebugLog}");
 
         if (elevMesh.Vertices.Count == 0)
-        { AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, "생성된 Mesh가 비어 있습니다. geometries를 확인하세요."); return; }
+        { AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, "생성된 Mesh가 비어 있습니다."); return; }
 
-        // ── 범례 위치 계산 (elevated mesh bbox 오른쪽) ───────────────────
-        BoundingBox bbox = elevMesh.GetBoundingBox(false);
-        double bboxW     = bbox.Max.X - bbox.Min.X;
-        double bboxH     = bbox.Max.Y - bbox.Min.Y;
-        double legendH   = bboxH;
-        double legendW   = Math.Max(bboxW * 0.03, 100.0);
-        double legendGap = bboxW * 0.02;
-        Point3d anchor   = new Point3d(bbox.Max.X + legendGap, bbox.Min.Y, 0.0);
+        // ── 범례 위치 계산 (bbox 오른쪽) ──────────────────────────────────
+        BoundingBox bbox  = elevMesh.GetBoundingBox(false);
+        double      bboxW = bbox.Max.X - bbox.Min.X;
+        double      bboxH = bbox.Max.Y - bbox.Min.Y;
+        Point3d     anchor = new Point3d(bbox.Max.X + bboxW * 0.02, bbox.Min.Y, 0.0);
+        double      legendW = Math.Max(bboxW * 0.03, 100.0);
 
-        var legendBuilder = new LegendBuilder(field, mapper, anchor, legendW, legendH, legendSteps);
+        var legendBuilder = new LegendBuilder(field, mapper, anchor, legendW, bboxH, legendSteps);
 
-        // ── 출력 ─────────────────────────────────────────────────────────
+        // ── 출력 ──────────────────────────────────────────────────────────
         mesh       = elevMesh;
         flatMesh   = flatResult;
         minVal     = field.MinValue;
@@ -122,8 +114,8 @@ public class Script_Instance : GH_ScriptInstance
         legendMesh = legendBuilder.BuildMesh();
         legendDots = legendBuilder.BuildDots();
 
-        Print("[4] 완료.");
-        } // end try
+        Print("[3] 완료.");
+        }
         catch (Exception ex)
         {
             Print($"[ERR] {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
@@ -140,8 +132,8 @@ public class Script_Instance : GH_ScriptInstance
     {
         public readonly List<Point3d> Points;
         public readonly List<double>  Values;
-        public readonly double MinValue;
-        public readonly double MaxValue;
+        public readonly double        MinValue;
+        public readonly double        MaxValue;
 
         public SpatialField(List<Point3d> points, List<double> values)
         {
@@ -167,19 +159,14 @@ public class Script_Instance : GH_ScriptInstance
             return double.IsNaN(result) || double.IsInfinity(result) ? 0.0 : result;
         }
 
-        /// 값을 [0, 1]로 정규화
         public double Normalize(double v)
         {
             double range = MaxValue - MinValue;
-            if (range < 1e-12) return 0.5;
-            return (v - MinValue) / range;
+            return range < 1e-12 ? 0.5 : (v - MinValue) / range;
         }
 
-        /// 값을 [outMin, outMax] 범위로 정규화
         public double Normalize(double v, double outMin, double outMax)
-        {
-            return outMin + Normalize(v) * (outMax - outMin);
-        }
+            => outMin + Normalize(v) * (outMax - outMin);
     }
 
 
@@ -188,35 +175,31 @@ public class Script_Instance : GH_ScriptInstance
     //  N개 color stop을 균등 간격으로 배치하고 t(0~1) → Color 보간
     //
     //  colorStyle:
-    //    0 = Custom        colorLow → colorHigh (2-stop, 사용자 지정)
-    //    1 = BlueRed       Blue → Red (diverging)
-    //    2 = Heatmap       Green → Yellow → Red
-    //    3 = Spectral      Blue → Cyan → Green → Yellow → Red
-    //    4 = Viridis       Purple → Blue → Teal → Green → Yellow
-    //    5 = Diverging     Blue → White → Red (중앙이 흰색)
-    //    6 = Grayscale     White → Black
+    //    0 = Custom     colorLow → colorHigh (사용자 지정)
+    //    1 = BlueRed    Blue → Red
+    //    2 = Heatmap    Green → Yellow → Red
+    //    3 = Spectral   Blue → Cyan → Green → Yellow → Red
+    //    4 = Viridis    Purple → Blue → Teal → Green → Yellow
+    //    5 = Diverging  Blue → White → Red
+    //    6 = Grayscale  White → Black
     // ═════════════════════════════════════════════════════════════════════
     class ColorMapper
     {
         private readonly Color[] _stops;
         public  readonly string  StyleName;
 
-        public ColorMapper(Color[] stops, string name)
-        {
-            _stops    = stops;
-            StyleName = name;
-        }
+        public ColorMapper(Color[] stops, string name) { _stops = stops; StyleName = name; }
 
         public static ColorMapper FromStyle(int style, Color customLow, Color customHigh)
         {
             switch (style)
             {
-                case 1: return new ColorMapper(new[]{ C(44,123,182), C(215,25,28) }, "BlueRed");
-                case 2: return new ColorMapper(new[]{ C(0,128,0), C(255,255,0), C(255,0,0) }, "Heatmap");
-                case 3: return new ColorMapper(new[]{ C(0,0,200), C(0,200,200), C(0,200,0), C(255,255,0), C(220,0,0) }, "Spectral");
-                case 4: return new ColorMapper(new[]{ C(68,1,84), C(58,82,139), C(32,144,140), C(94,201,98), C(253,231,37) }, "Viridis");
-                case 5: return new ColorMapper(new[]{ C(44,123,182), C(255,255,255), C(215,25,28) }, "Diverging");
-                case 6: return new ColorMapper(new[]{ C(255,255,255), C(0,0,0) }, "Grayscale");
+                case 1:  return new ColorMapper(new[]{ C(44,123,182), C(215,25,28) }, "BlueRed");
+                case 2:  return new ColorMapper(new[]{ C(0,128,0), C(255,255,0), C(255,0,0) }, "Heatmap");
+                case 3:  return new ColorMapper(new[]{ C(0,0,200), C(0,200,200), C(0,200,0), C(255,255,0), C(220,0,0) }, "Spectral");
+                case 4:  return new ColorMapper(new[]{ C(68,1,84), C(58,82,139), C(32,144,140), C(94,201,98), C(253,231,37) }, "Viridis");
+                case 5:  return new ColorMapper(new[]{ C(44,123,182), C(255,255,255), C(215,25,28) }, "Diverging");
+                case 6:  return new ColorMapper(new[]{ C(255,255,255), C(0,0,0) }, "Grayscale");
                 default: return new ColorMapper(new[]{ customLow, customHigh }, "Custom");
             }
         }
@@ -230,152 +213,140 @@ public class Script_Instance : GH_ScriptInstance
             int    lo     = (int)scaled;
             int    hi     = Math.Min(lo + 1, _stops.Length - 1);
             double lt     = scaled - lo;
-
-            int r = (int)Math.Round(_stops[lo].R + (_stops[hi].R - _stops[lo].R) * lt);
-            int g = (int)Math.Round(_stops[lo].G + (_stops[hi].G - _stops[lo].G) * lt);
-            int b = (int)Math.Round(_stops[lo].B + (_stops[hi].B - _stops[lo].B) * lt);
             return Color.FromArgb(
-                Math.Max(0, Math.Min(255, r)),
-                Math.Max(0, Math.Min(255, g)),
-                Math.Max(0, Math.Min(255, b)));
+                Lerp(_stops[lo].R, _stops[hi].R, lt),
+                Lerp(_stops[lo].G, _stops[hi].G, lt),
+                Lerp(_stops[lo].B, _stops[hi].B, lt));
         }
+
+        private static int Lerp(int a, int b, double t)
+            => Math.Max(0, Math.Min(255, (int)Math.Round(a + (b - a) * t)));
     }
 
 
     // ═════════════════════════════════════════════════════════════════════
-    //  CLASS: DistrictMeshBuilder
-    //  행정동 경계 Curve → Mesh 변환 후 IDW 값을 Z 변위와 Color로 적용한다.
+    //  CLASS: MeshBuilder
+    //  GeoUnion이 반환한 단일 외곽선 Curve → Mesh 변환 후
+    //  IDW 값을 Color로, boundary 거리 감쇠(smoothstep)를 Z 변위로 적용한다.
+    //
+    //  Z = Normalize(IDW) * heightScale * smoothstep(dist / maxDist)
+    //    → 경계에서 Z=0, 내부로 갈수록 자연스럽게 솟아오르는 산 형태
     // ═════════════════════════════════════════════════════════════════════
-    class DistrictMeshBuilder
+    class MeshBuilder
     {
         private readonly SpatialField _field;
         private readonly ColorMapper  _mapper;
         private readonly double       _power;
         private readonly double       _heightScale;
         private readonly double       _maxEdgeLen;
-        public  string               _dbgLog = "";
+        private readonly double       _edgeFalloff;  // 경계 감쇠 지수: 낮을수록 완만, 높을수록 급격
+        private readonly double       _heightRatio;  // Z 최대 높이 = bboxWidth * heightRatio
 
-        private const double DEFAULT_TOLERANCE = 0.001;
+        public string DebugLog { get; private set; } = "";
 
-        public DistrictMeshBuilder(
-            SpatialField field, ColorMapper mapper,
-            double power, double heightScale, double maxEdgeLen)
+        private const double DEFAULT_TOL = 0.001;
+
+        public MeshBuilder(SpatialField field, ColorMapper mapper,
+                           double power, double heightScale, double maxEdgeLen,
+                           double edgeFalloff, double heightRatio)
         {
             _field       = field;
             _mapper      = mapper;
             _power       = power;
             _heightScale = heightScale;
             _maxEdgeLen  = maxEdgeLen;
+            _edgeFalloff = edgeFalloff;
+            _heightRatio = heightRatio;
         }
 
-        public void Build(List<Curve> boundaries, out Mesh elevated, out Mesh flat,
-                          out int dbgNull, out int dbgBrepFail, out int dbgMeshFail, out int dbgOk)
+        public (Mesh elevated, Mesh flat) Build(Curve boundary)
         {
-            elevated    = new Mesh();
-            flat        = new Mesh();
-            dbgNull     = 0;
-            dbgBrepFail = 0;
-            dbgMeshFail = 0;
-            dbgOk       = 0;
+            double tol = RhinoDoc.ActiveDoc?.ModelAbsoluteTolerance ?? DEFAULT_TOL;
 
-            var mp  = BuildMeshingParameters();
-            double tol = RhinoDoc.ActiveDoc?.ModelAbsoluteTolerance ?? DEFAULT_TOLERANCE;
-
-            // 전체 geometry bbox width → Z 정규화 기준
-            var combinedBbox = BoundingBox.Empty;
-            foreach (Curve c in boundaries)
-                if (c != null) combinedBbox.Union(c.GetBoundingBox(false));
-            double bboxWidth = combinedBbox.IsValid ? (combinedBbox.Max.X - combinedBbox.Min.X) : 1.0;
-            // [검증] Print는 RunScript 레벨에서 불가하므로 _dbgLog에 기록
-            _dbgLog = $"[3a] bboxWidth={bboxWidth:F0} | ";
-
-            foreach (Curve boundary in boundaries)
+            // ── Curve → Brep → 단일 baseMesh ─────────────────────────────
+            Brep[] breps = Brep.CreatePlanarBreps(boundary, tol);
+            if (breps == null || breps.Length == 0)
             {
-                if (boundary == null) { dbgNull++; continue; }
-
-                Brep[] planarBreps = Brep.CreatePlanarBreps(boundary, tol);
-                if (planarBreps == null || planarBreps.Length == 0) { dbgBrepFail++; continue; }
-
-                foreach (Brep brep in planarBreps)
-                {
-                    Mesh districtMesh = MeshFromBrep(brep, mp);
-                    if (districtMesh == null || districtMesh.Vertices.Count == 0) { dbgMeshFail++; continue; }
-
-                    int n = districtMesh.Vertices.Count;
-                    var interpValues = new double[n];
-                    var colors       = new Color[n];
-
-                    for (int vi = 0; vi < n; vi++)
-                    {
-                        Point3f vf = districtMesh.Vertices[vi];
-                        Point3d q  = new Point3d(vf.X, vf.Y, 0.0);
-                        double f   = _field.IDW(q, _power);
-                        double t   = _field.Normalize(f);
-                        interpValues[vi] = f;
-                        colors[vi]       = _mapper.Map(t);
-                    }
-
-                    // elevated: DuplicateMesh → texcoords 제거 → Z 적용(double precision) → Compact
-                    Mesh elevPart = districtMesh.DuplicateMesh();
-                    elevPart.TextureCoordinates.Clear();
-                    // Z = Normalize(idw, 0, bboxWidth) × heightScale
-                    // double precision Point3dAt + SetVertex(double) 사용
-                    for (int vi = 0; vi < n; vi++)
-                    {
-                        Point3d vd = districtMesh.Vertices.Point3dAt(vi);
-                        double  zd = _field.Normalize(interpValues[vi], 0.0, bboxWidth/4) * _heightScale;
-                        if (double.IsNaN(zd) || double.IsInfinity(zd)) zd = 0.0;
-                        elevPart.Vertices.SetVertex(vi, vd.X, vd.Y, zd);
-                    }
-                    // [검증] 첫 district: elevPart 개별 IsValid + bboxWidth 확인
-                    if (dbgOk == 0)
-                        _dbgLog += $"elevPart[0]: Valid={elevPart.IsValid} HasDblPrec={elevPart.Vertices.UseDoublePrecisionVertices}";
-                    elevPart.Compact();
-                    ApplyVertexColors(elevPart, colors);
-                    elevPart.Normals.ComputeNormals();
-                    elevated.Append(elevPart);
-
-                    // flat: DuplicateMesh → texcoords 제거 → Compact
-                    Mesh flatPart = districtMesh.DuplicateMesh();
-                    flatPart.TextureCoordinates.Clear();
-                    flatPart.Compact();
-                    ApplyVertexColors(flatPart, colors);
-                    flatPart.Normals.ComputeNormals();
-                    flat.Append(flatPart);
-
-                    dbgOk++;
-                }
+                DebugLog = "Brep 생성 실패";
+                return (new Mesh(), new Mesh());
             }
 
-            elevated.Compact();
-            elevated.FaceNormals.ComputeFaceNormals();
-            elevated.Normals.ComputeNormals();
-            flat.Compact();
-            flat.FaceNormals.ComputeFaceNormals();
+            var mp       = new MeshingParameters {
+                MaximumEdgeLength = _maxEdgeLen,
+                MinimumEdgeLength = _maxEdgeLen * 0.1,
+                JaggedSeams       = false,
+                RefineGrid        = true,
+            };
+            var baseMesh = new Mesh();
+            foreach (Brep brep in breps)
+            {
+                Mesh[] meshes = Mesh.CreateFromBrep(brep, mp);
+                if (meshes != null) foreach (Mesh m in meshes) baseMesh.Append(m);
+            }
+            baseMesh.Compact();
+
+            int n = baseMesh.Vertices.Count;
+            if (n == 0) { DebugLog = "Mesh 버텍스 없음"; return (new Mesh(), new Mesh()); }
+
+            // Z 정규화 기준: boundary bbox width
+            var    bbox     = boundary.GetBoundingBox(false);
+            double bboxWidth = bbox.IsValid ? (bbox.Max.X - bbox.Min.X) : 1.0;
+
+            // ── 버텍스별 IDW + boundary 거리 계산 (단일 패스) ────────────
+            var    interpValues = new double[n];
+            var    colors       = new Color[n];
+            var    dists        = new double[n];
+            double maxDist      = 0.0;
+
+            for (int vi = 0; vi < n; vi++)
+            {
+                Point3d q   = baseMesh.Vertices.Point3dAt(vi);
+                Point3d q2d = new Point3d(q.X, q.Y, 0.0);
+
+                double f         = _field.IDW(q2d, _power);
+                interpValues[vi] = f;
+                colors[vi]       = _mapper.Map(_field.Normalize(f));
+
+                double t;
+                boundary.ClosestPoint(q2d, out t);
+                Point3d closest = boundary.PointAt(t);
+                double  d = Math.Sqrt(
+                    (q.X - closest.X) * (q.X - closest.X) +
+                    (q.Y - closest.Y) * (q.Y - closest.Y));
+                dists[vi] = d;
+                if (d > maxDist) maxDist = d;
+            }
+
+            // ── flat mesh: Z=0, 컬러만 ───────────────────────────────────
+            Mesh flat = baseMesh.DuplicateMesh();
+            flat.TextureCoordinates.Clear();
+            ApplyColors(flat, colors);
             flat.Normals.ComputeNormals();
+            flat.FaceNormals.ComputeFaceNormals();
+
+            // ── elevated mesh: Z = IDW_height * smoothstep(dist/maxDist) ─
+            Mesh elevated = baseMesh.DuplicateMesh();
+            elevated.TextureCoordinates.Clear();
+            for (int vi = 0; vi < n; vi++)
+            {
+                Point3d vd = baseMesh.Vertices.Point3dAt(vi);
+                double  dt = maxDist > 0 ? Math.Min(dists[vi] / maxDist, 1.0) : 1.0;
+                double  s  = Math.Pow(dt, _edgeFalloff);  // 감쇠: 낮을수록 완만, 높을수록 경계 근처 급격
+                double  zd = _field.Normalize(interpValues[vi], 0.0, bboxWidth * _heightRatio)
+                             * _heightScale * s;
+                if (double.IsNaN(zd) || double.IsInfinity(zd)) zd = 0.0;
+                elevated.Vertices.SetVertex(vi, new Point3d(vd.X, vd.Y, zd));
+            }
+            ApplyColors(elevated, colors);
+            elevated.Normals.ComputeNormals();
+            elevated.FaceNormals.ComputeFaceNormals();
+
+            DebugLog = $"Verts={n} Faces={baseMesh.Faces.Count} bboxW={bboxWidth:F0}m maxDist={maxDist:F0}m | "
+                     + $"elev: Valid={elevated.IsValid} flat: Valid={flat.IsValid}";
+            return (elevated, flat);
         }
 
-        private MeshingParameters BuildMeshingParameters()
-        {
-            var mp = new MeshingParameters();
-            mp.MaximumEdgeLength = _maxEdgeLen;
-            mp.MinimumEdgeLength = _maxEdgeLen * 0.1;
-            mp.JaggedSeams       = false;
-            mp.RefineGrid        = true;
-            return mp;
-        }
-
-        private static Mesh MeshFromBrep(Brep brep, MeshingParameters mp)
-        {
-            Mesh[] meshes = Mesh.CreateFromBrep(brep, mp);
-            if (meshes == null || meshes.Length == 0) return null;
-            var combined = new Mesh();
-            foreach (Mesh m in meshes) combined.Append(m);
-            combined.Compact();
-            return combined;
-        }
-
-        private static void ApplyVertexColors(Mesh mesh, Color[] colors)
+        private static void ApplyColors(Mesh mesh, Color[] colors)
         {
             mesh.VertexColors.CreateMonotoneMesh(Color.White);
             for (int i = 0; i < colors.Length; i++)
@@ -397,9 +368,8 @@ public class Script_Instance : GH_ScriptInstance
         private readonly double       _height;
         private readonly int          _steps;
 
-        public LegendBuilder(
-            SpatialField field, ColorMapper mapper,
-            Point3d anchor, double width, double height, int steps)
+        public LegendBuilder(SpatialField field, ColorMapper mapper,
+                             Point3d anchor, double width, double height, int steps)
         {
             _field  = field;
             _mapper = mapper;
@@ -412,8 +382,8 @@ public class Script_Instance : GH_ScriptInstance
         /// 수직 그라디언트 컬러 바 Mesh (아래=min, 위=max)
         public Mesh BuildMesh()
         {
-            var mesh  = new Mesh();
-            var cols  = new List<Color>();
+            var    mesh  = new Mesh();
+            var    cols  = new List<Color>();
             double stepH = _height / _steps;
 
             for (int i = 0; i <= _steps; i++)
@@ -426,17 +396,14 @@ public class Script_Instance : GH_ScriptInstance
                 cols.Add(c);
                 cols.Add(c);
             }
-
             for (int i = 0; i < _steps; i++)
             {
                 int b = i * 2;
                 mesh.Faces.AddFace(b, b + 2, b + 3, b + 1);
             }
-
             mesh.VertexColors.CreateMonotoneMesh(Color.White);
             for (int i = 0; i < cols.Count; i++)
                 mesh.VertexColors.SetColor(i, cols[i]);
-
             mesh.Normals.ComputeNormals();
             return mesh;
         }
@@ -444,7 +411,7 @@ public class Script_Instance : GH_ScriptInstance
         /// 범례 값 레이블 TextDot 목록
         public List<TextDot> BuildDots()
         {
-            var dots  = new List<TextDot>();
+            var    dots   = new List<TextDot>();
             double stepH  = _height / _steps;
             double labelX = _anchor.X + _width * 1.4;
 
@@ -453,7 +420,7 @@ public class Script_Instance : GH_ScriptInstance
                 double t   = (double)i / _steps;
                 double val = _field.MinValue + t * (_field.MaxValue - _field.MinValue);
                 double y   = _anchor.Y + i * stepH;
-                var dot    = new TextDot(val.ToString("N0"), new Point3d(labelX, y, 0.0));
+                var    dot = new TextDot(val.ToString("N0"), new Point3d(labelX, y, 0.0));
                 dot.FontHeight = 12;
                 dots.Add(dot);
             }
